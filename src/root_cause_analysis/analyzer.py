@@ -647,7 +647,26 @@ class RootCauseAnalyzer:
                 logger.error("Client name column not available in data")
                 return {}
             
+            # Try exact match first
             client_data = base_data[base_data['client_name'] == client_name]
+            
+            # If no exact match, try case-insensitive match
+            if client_data.empty:
+                logger.info(f"No exact match for client name: {client_name}, trying case-insensitive match")
+                client_data = base_data[base_data['client_name'].str.lower() == client_name.lower()]
+            
+            # If still no match, try partial match
+            if client_data.empty:
+                logger.info(f"No case-insensitive match for client name: {client_name}, trying partial match")
+                client_data = base_data[base_data['client_name'].str.contains(client_name, case=False, na=False)]
+            
+            # If still no match, try removing special characters
+            if client_data.empty:
+                import re
+                logger.info(f"No partial match for client name: {client_name}, trying with special characters removed")
+                clean_client = re.sub(r'[^a-zA-Z0-9]', '', client_name)
+                clean_data_names = base_data['client_name'].apply(lambda x: re.sub(r'[^a-zA-Z0-9]', '', str(x)))
+                client_data = base_data[clean_data_names.str.contains(clean_client, case=False, na=False)]
         else:
             logger.error("Either client_id or client_name must be provided")
             return {}

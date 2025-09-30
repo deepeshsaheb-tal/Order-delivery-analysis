@@ -223,6 +223,16 @@ class QueryProcessor:
         Returns:
             Dict[str, Any]: Parsed query parameters
         """
+        # Common Indian city names to check against
+        self.common_cities = [
+            "Mumbai", "Delhi", "Bangalore", "Chennai", "Kolkata", "Hyderabad", "Pune", 
+            "Ahmedabad", "Surat", "Jaipur", "New Delhi", "Navi Mumbai", "Greater Noida",
+            "Lucknow", "Kanpur", "Nagpur", "Indore", "Thane", "Bhopal", "Visakhapatnam",
+            "Patna", "Vadodara", "Ghaziabad", "Ludhiana", "Agra", "Nashik", "Faridabad",
+            "Meerut", "Rajkot", "Varanasi", "Srinagar", "Aurangabad", "Dhanbad", "Amritsar",
+            "Allahabad", "Ranchi", "Coimbatore", "Jabalpur", "Gwalior", "Vijayawada", "Jodhpur"
+        ]
+        
         # Initialize default structure
         result = {
             "query_type": None,
@@ -262,22 +272,116 @@ class QueryProcessor:
         else:
             result["query_type"] = "general_analysis"
         
-        # Extract city
-        city_match = re.search(r'city\s+([A-Za-z\s]+)', query)
-        if city_match:
-            result["entities"]["city"] = city_match.group(1).strip()
+        # Extract cities for comparison queries
+        if result["query_type"] == "comparison":
+            # Special case for the specific query pattern
+            # Use a more dynamic pattern for comparison queries with time indicators
+            # This pattern handles city names that may contain spaces
+            comparison_pattern = re.search(r'between\s+([A-Za-z\s]+?)\s+and\s+([A-Za-z\s]+?)\s+(last|this|next|past|previous)\s+(month|week|day|year|quarter)', query_lower)
+            if comparison_pattern:
+                city1 = comparison_pattern.group(1).strip().title()
+                city2 = comparison_pattern.group(2).strip().title()
+                
+                # Clean up city names by removing any trailing words that aren't part of the city name
+                # Try to match with common city names
+                city1_match = next((city for city in self.common_cities if city.lower() in city1.lower()), city1)
+                city2_match = next((city for city in self.common_cities if city.lower() in city2.lower()), city2)
+                
+                # Use the matched cities or the original extracted ones
+                result["entities"]["city"] = [city1_match, city2_match]
+                logger.info(f"Dynamic pattern match: {city1_match} and {city2_match} with time indicator {comparison_pattern.group(3)} {comparison_pattern.group(4)}")
+            else:
+                # Initialize cities_match to None
+                cities_match = None
+                
+                # Pattern 1: "between City1 and City2" (without time indicators)
+                if "between" in query_lower:
+                    cities_match = re.search(r'between\s+([A-Za-z\s]+?)\s+and\s+([A-Za-z\s]+?)(?:\s|$)', query_lower)
+                    if cities_match:
+                        city1 = cities_match.group(1).strip().title()
+                        city2 = cities_match.group(2).strip().title()
+                        
+                        # Clean up city names using the common cities list
+                        city1_match = next((city for city in self.common_cities if city.lower() in city1.lower()), city1)
+                        city2_match = next((city for city in self.common_cities if city.lower() in city2.lower()), city2)
+                        
+                        result["entities"]["city"] = [city1_match, city2_match]
+                        logger.info(f"Extracted cities for comparison (pattern 1): {city1_match} and {city2_match}")
+                
+                # Pattern 2: "City1 and City2" or "City1 vs City2"
+                if not cities_match:
+                    cities_match = re.search(r'\b([A-Za-z\s]+?)\s+(and|vs|versus|to|compared\s+to|compared\s+with)\s+([A-Za-z\s]+?)\b', query_lower)
+                    if cities_match:
+                        city1 = cities_match.group(1).strip().title()
+                        city2 = cities_match.group(3).strip().title()
+                        
+                        # Clean up city names using the common cities list
+                        city1_match = next((city for city in self.common_cities if city.lower() in city1.lower()), city1)
+                        city2_match = next((city for city in self.common_cities if city.lower() in city2.lower()), city2)
+                        
+                        result["entities"]["city"] = [city1_match, city2_match]
+                        logger.info(f"Extracted cities for comparison (pattern 2): {city1_match} and {city2_match}")
+            
+            # Pattern 3: Look for common city names if we don't have cities yet
+            if not result["entities"]["city"]:
+                found_cities = []
+                for city in self.common_cities:
+                    if city.lower() in query_lower:
+                        found_cities.append(city)
+                
+                if len(found_cities) >= 2:
+                    result["entities"]["city"] = found_cities[:2]
+                    logger.info(f"Found cities for comparison (pattern 3): {found_cities[:2]}")
+                    
+            # If we still don't have two cities, try to extract any capitalized words that might be cities
+            if not result["entities"]["city"]:
+                # Look for capitalized words that might be city names
+                capitalized_words = re.findall(r'\b([A-Z][a-z]+)\b', query)
+                if len(capitalized_words) >= 2:
+                    result["entities"]["city"] = capitalized_words[:2]
+                    logger.info(f"Extracted capitalized words as cities: {capitalized_words[:2]}")
+                    
+            # If we still don't have a list of cities, convert single city to list for consistency
+            if result["entities"]["city"] and not isinstance(result["entities"]["city"], list):
+                result["entities"]["city"] = [result["entities"]["city"]]
+                
+            # Make sure we have exactly two cities for comparison
+            if isinstance(result["entities"]["city"], list) and len(result["entities"]["city"]) == 1:
+                # If we only have one city, try to find another one
+                for city in self.common_cities:
+                    if city not in result["entities"]["city"] and city.lower() in query_lower:
+                        result["entities"]["city"].append(city)
+                        logger.info(f"Added second city for comparison: {city}")
+                        break
         else:
-            # Try to find common city names
-            common_cities = ["Mumbai", "Delhi", "Bangalore", "Chennai", "Kolkata", "Hyderabad", "Pune", "Ahmedabad", "Surat", "Jaipur"]
-            for city in common_cities:
-                if city.lower() in query_lower:
-                    result["entities"]["city"] = city
-                    break
+            # Extract single city for non-comparison queries
+            city_match = re.search(r'city\s+([A-Za-z\s]+)', query)
+            if city_match:
+                result["entities"]["city"] = city_match.group(1).strip()
+            else:
+                # Try to find common city names
+                for city in self.common_cities:
+                    if city.lower() in query_lower:
+                        result["entities"]["city"] = city
+                        break
         
-        # Extract client
-        client_match = re.search(r'client\s+([A-Za-z\s]+)', query, re.IGNORECASE)
-        if client_match:
-            result["entities"]["client"] = client_match.group(1).strip()
+        # Extract client - include hyphens and other special characters in names
+        # First, handle the specific case for 'Why did Client X's orders fail' queries
+        client_name_match = re.search(r'did\s+(?:client\s+)?([A-Za-z][A-Za-z\-\']+(?:\s*[A-Za-z\-\']+)?)(?:[\'\'s]+)?\s+orders', query, re.IGNORECASE)
+        if client_name_match:
+            result["entities"]["client"] = client_name_match.group(1).strip()
+            logger.info(f"Extracted client name: {client_name_match.group(1).strip()} (with/without prefix)")
+        else:
+            # Try standard client extraction with prefix
+            client_match = re.search(r'client\s+([A-Za-z][A-Za-z\s\-\']+?)(?:[\'\'s]*\s+orders|$)', query, re.IGNORECASE)
+            if client_match:
+                result["entities"]["client"] = client_match.group(1).strip()
+                logger.info(f"Extracted client name: {client_match.group(1).strip()} (with prefix)")
+            # If all else fails, look for common client names in the dataset
+            elif 'client_name' in self.context.get('entities', {}) and self.context['entities']['client_name']:
+                result["entities"]["client"] = self.context['entities']['client_name']
+                logger.info(f"Using client name from context: {result['entities']['client']}")
+                    
         
         # Extract warehouse
         warehouse_match = re.search(r'warehouse\s+([A-Za-z0-9\s]+)', query, re.IGNORECASE)
@@ -285,9 +389,7 @@ class QueryProcessor:
             warehouse = warehouse_match.group(1).strip()
             result["entities"]["warehouse"] = warehouse
             
-            # Special case for Warehouse 5 in August
-            if warehouse == 'Warehouse 5' and 'august' in query_lower:
-                result["additional_parameters"]["warehouse5_august"] = True
+            # No special case handling for specific warehouses
         
         # Extract time period
         if "yesterday" in query_lower:
@@ -304,12 +406,6 @@ class QueryProcessor:
             start_date = end_date - timedelta(days=30)
             result["time_range"]["start_date"] = start_date.strftime("%Y-%m-%d")
             result["time_range"]["end_date"] = end_date.strftime("%Y-%m-%d")
-        elif "august" in query_lower:
-            # Use 2025 as the year for August since that's the year in our dataset
-            result["time_range"]["start_date"] = "2025-08-01"
-            result["time_range"]["end_date"] = "2025-08-31"
-            # Add a special flag for August 2025
-            result["additional_parameters"]["august_2025"] = True
         elif "festival" in query_lower or "holiday" in query_lower or "peak" in query_lower:
             # Handle special periods like festival period
             # Store the period name in additional_parameters instead of trying to parse it as a date
@@ -317,6 +413,43 @@ class QueryProcessor:
             # Use a reasonable default date range for festival period (e.g., October-November for Diwali season)
             result["time_range"]["start_date"] = "2023-10-01"
             result["time_range"]["end_date"] = "2023-11-30"
+        else:
+            # Handle any month mentioned in the query
+            # Define month names and their corresponding numbers
+            month_mapping = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+                'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+            }
+            
+            # Check for any month name in the query
+            month_found = False
+            for month_name, month_num in month_mapping.items():
+                if month_name in query_lower:
+                    month_found = True
+                    # Use 2025 as the default year since that's the year in our dataset
+                    year = 2025
+                    
+                    # Get the number of days in the month
+                    if month_num in [4, 6, 9, 11]:  # April, June, September, November
+                        days_in_month = 30
+                    elif month_num == 2:  # February
+                        # Check for leap year (2025 is not a leap year)
+                        if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                            days_in_month = 29
+                        else:
+                            days_in_month = 28
+                    else:
+                        days_in_month = 31
+                    
+                    # Format the dates
+                    start_date = f"{year}-{month_num:02d}-01"
+                    end_date = f"{year}-{month_num:02d}-{days_in_month}"
+                    
+                    result["time_range"]["start_date"] = start_date
+                    result["time_range"]["end_date"] = end_date
+                    
+                    logger.info(f"Extracted month: {month_name}, setting date range: {start_date} to {end_date}")
+                    break
         
         # Extract order volume for prediction queries
         if result["query_type"] == "prediction":
